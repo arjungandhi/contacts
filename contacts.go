@@ -2,6 +2,7 @@ package contacts
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -195,6 +196,163 @@ func FormatCard(card vcard.Card) string {
 	}
 
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// CardToMap converts a vcard.Card to a JSON-friendly map.
+func CardToMap(card vcard.Card) map[string]any {
+	m := map[string]any{}
+
+	if uid := CardUID(card); uid != "" {
+		m["uid"] = uid
+	}
+	if fn := CardFullName(card); fn != "" {
+		m["name"] = fn
+	}
+	if nicks := card[vcard.FieldNickname]; len(nicks) > 0 {
+		m["nickname"] = nicks[0].Value
+	}
+	if org := card.Value(vcard.FieldOrganization); org != "" {
+		m["organization"] = strings.TrimRight(strings.ReplaceAll(org, ";", ", "), ", ")
+	}
+	if title := card.Value(vcard.FieldTitle); title != "" {
+		m["title"] = title
+	}
+
+	if phones := card[vcard.FieldTelephone]; len(phones) > 0 {
+		var list []map[string]string
+		for _, f := range phones {
+			entry := map[string]string{"value": f.Value}
+			if t := f.Params.Get(vcard.ParamType); t != "" {
+				entry["type"] = t
+			}
+			list = append(list, entry)
+		}
+		m["phones"] = list
+	}
+
+	if emails := card[vcard.FieldEmail]; len(emails) > 0 {
+		var list []map[string]string
+		for _, f := range emails {
+			entry := map[string]string{"value": f.Value}
+			if t := f.Params.Get(vcard.ParamType); t != "" {
+				entry["type"] = t
+			}
+			list = append(list, entry)
+		}
+		m["emails"] = list
+	}
+
+	if addrs := card[vcard.FieldAddress]; len(addrs) > 0 {
+		var list []map[string]string
+		for _, f := range addrs {
+			addr := formatAddress(f.Value)
+			if addr == "" {
+				continue
+			}
+			entry := map[string]string{"value": addr}
+			if t := f.Params.Get(vcard.ParamType); t != "" {
+				entry["type"] = t
+			}
+			list = append(list, entry)
+		}
+		if len(list) > 0 {
+			m["addresses"] = list
+		}
+	}
+
+	if bday := card.Value(vcard.FieldBirthday); bday != "" {
+		m["birthday"] = formatDate(bday)
+	}
+	if ann := card.Value(vcard.FieldAnniversary); ann != "" {
+		m["anniversary"] = formatDate(ann)
+	}
+
+	if urls := card[vcard.FieldURL]; len(urls) > 0 {
+		var list []map[string]string
+		for _, f := range urls {
+			entry := map[string]string{"value": f.Value}
+			if t := f.Params.Get(vcard.ParamType); t != "" {
+				entry["type"] = t
+			}
+			list = append(list, entry)
+		}
+		m["urls"] = list
+	}
+
+	if ims := card[vcard.FieldIMPP]; len(ims) > 0 {
+		var list []string
+		for _, f := range ims {
+			list = append(list, f.Value)
+		}
+		m["im"] = list
+	}
+
+	if rels := card[vcard.FieldRelated]; len(rels) > 0 {
+		var list []map[string]string
+		for _, f := range rels {
+			entry := map[string]string{"value": f.Value}
+			if t := f.Params.Get(vcard.ParamType); t != "" {
+				entry["type"] = t
+			}
+			list = append(list, entry)
+		}
+		m["related"] = list
+	}
+
+	if g := card.Value(vcard.FieldGender); g != "" {
+		m["gender"] = g
+	}
+
+	if notes := card[vcard.FieldNote]; len(notes) > 0 {
+		var list []string
+		for _, f := range notes {
+			list = append(list, f.Value)
+		}
+		m["notes"] = list
+	}
+
+	xFields := []struct {
+		key   string
+		label string
+	}{
+		{"X-GOOGLE-INTEREST", "interests"},
+		{"X-GOOGLE-SKILL", "skills"},
+		{"X-GOOGLE-OCCUPATION", "occupations"},
+		{"X-GOOGLE-LOCATION", "locations"},
+	}
+	for _, xf := range xFields {
+		if fields := card[xf.key]; len(fields) > 0 {
+			var list []string
+			for _, f := range fields {
+				list = append(list, f.Value)
+			}
+			m[xf.label] = list
+		}
+	}
+
+	return m
+}
+
+// FormatCardJSON returns a JSON representation of a vcard.Card.
+func FormatCardJSON(card vcard.Card) (string, error) {
+	data, err := json.MarshalIndent(CardToMap(card), "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// FormatCardsJSON returns a JSON array representation of multiple vcard.Cards.
+func FormatCardsJSON(cards []vcard.Card) (string, error) {
+	var list []map[string]any
+	for _, card := range cards {
+		list = append(list, CardToMap(card))
+	}
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func formatTypeLabel(f *vcard.Field, fallback string) string {

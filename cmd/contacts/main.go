@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"golang.org/x/term"
@@ -21,14 +22,14 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/emersion/go-vcard"
 	"github.com/rwxrob/bonzai"
-	Z "github.com/rwxrob/bonzai/z"
-	"github.com/rwxrob/help"
+	"github.com/rwxrob/bonzai/cmds/help"
+	"github.com/rwxrob/bonzai/comp"
 )
 
 // contactCompleter completes contact names for commands that take a contact arg.
 type contactCompleter struct{}
 
-func (contactCompleter) Complete(_ bonzai.Command, args ...string) []string {
+func (contactCompleter) Complete(args ...string) []string {
 	cm, err := getManagerQuiet()
 	if err != nil {
 		return []string{}
@@ -54,16 +55,17 @@ func (contactCompleter) Complete(_ bonzai.Command, args ...string) []string {
 	return matches
 }
 
-var Cmd = &Z.Cmd{
-	Name:     "contacts",
-	Summary:  "manage your contacts",
-	Commands: []*Z.Cmd{help.Cmd, initCmd, syncCmd, listCmd, getCmd, deleteCmd},
+var Cmd = &bonzai.Cmd{
+	Name:  "contacts",
+	Short: "manage your contacts",
+	Comp:  comp.CmdsOpts,
+	Cmds:  []*bonzai.Cmd{help.Cmd, initCmd, syncCmd, listCmd, getCmd, deleteCmd},
 }
 
-var initCmd = &Z.Cmd{
-	Name:    "init",
-	Summary: "initialize google contacts provider",
-	Call: func(x *Z.Cmd, args ...string) error {
+var initCmd = &bonzai.Cmd{
+	Name:  "init",
+	Short: "initialize google contacts provider",
+	Do: func(x *bonzai.Cmd, args ...string) error {
 		cfg := contacts.NewConfig()
 		if err := cfg.EnsureDir(); err != nil {
 			return err
@@ -154,10 +156,10 @@ func authorize(cfg *contacts.Config, provider *contacts.GoogleContactsProvider) 
 	return nil
 }
 
-var syncCmd = &Z.Cmd{
-	Name:    "sync",
-	Summary: "sync contacts from google",
-	Call: func(x *Z.Cmd, args ...string) error {
+var syncCmd = &bonzai.Cmd{
+	Name:  "sync",
+	Short: "sync contacts from google",
+	Do: func(x *bonzai.Cmd, args ...string) error {
 		cm, err := getManager()
 		if err != nil {
 			return err
@@ -175,10 +177,16 @@ var syncCmd = &Z.Cmd{
 	},
 }
 
-var listCmd = &Z.Cmd{
-	Name:    "list",
-	Summary: "list all contacts (pipe-friendly)",
-	Call: func(x *Z.Cmd, args ...string) error {
+var listCmd = &bonzai.Cmd{
+	Name:  "list",
+	Short: "list all contacts (-o table|json|vcf)",
+	Usage: "[-o format]",
+	Opts:  "table|json|vcf",
+	Do: func(x *bonzai.Cmd, args ...string) error {
+		format, _, err := parseOutputFlag(args)
+		if err != nil {
+			return err
+		}
 		cm, err := getManager()
 		if err != nil {
 			return err
@@ -187,35 +195,58 @@ var listCmd = &Z.Cmd{
 		if err != nil {
 			return err
 		}
-		for _, card := range list {
-			fmt.Printf("%s|%s|%s|%s\n",
-				contacts.CardUID(card),
-				contacts.CardFullName(card),
-				contacts.PrimaryEmail(card),
-				contacts.PrimaryPhone(card),
-			)
+		switch format {
+		case "json":
+			out, err := contacts.FormatCardsJSON(list)
+			if err != nil {
+				return err
+			}
+			fmt.Println(out)
+		case "vcf":
+			for _, card := range list {
+				data, err := contacts.EncodeCard(card)
+				if err != nil {
+					return err
+				}
+				fmt.Print(string(data))
+			}
+		default: // table
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "UID\tNAME\tEMAIL\tPHONE")
+			for _, card := range list {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+					contacts.CardUID(card),
+					contacts.CardFullName(card),
+					contacts.PrimaryEmail(card),
+					contacts.PrimaryPhone(card),
+				)
+			}
+			w.Flush()
 		}
 		return nil
 	},
 }
 
-var getCmd = &Z.Cmd{
-	Name:    "get",
-	Summary: "get a contact by name or UID (--vcf for raw vCard)",
-	Usage:   "[--vcf] <name|uid>",
-	MinArgs: 1,
-	Comp:    contactCompleter{},
-	Call: func(x *Z.Cmd, args ...string) error {
-		vcf := false
-		parts := args
-		if args[0] == "--vcf" {
-			vcf = true
-			parts = args[1:]
+var getCmd = &bonzai.Cmd{
+	Name:  "get",
+	Short: "get a contact by name or UID (-o table|json|vcf)",
+	Usage: "[-o format] <name|uid>",
+	Opts:  "table|json|vcf",
+	Comp:  contactCompleter{},
+	Do: func(x *bonzai.Cmd, args ...string) error {
+		format, rest, err := parseOutputFlag(args)
+		if err != nil {
+			return err
 		}
-		if len(parts) == 0 {
+		// Backward compat: --vcf still works
+		if len(rest) > 0 && rest[0] == "--vcf" {
+			format = "vcf"
+			rest = rest[1:]
+		}
+		if len(rest) == 0 {
 			return fmt.Errorf("missing argument")
 		}
-		query := strings.Join(parts, " ")
+		query := strings.Join(rest, " ")
 		cm, err := getManager()
 		if err != nil {
 			return err
@@ -227,13 +258,20 @@ var getCmd = &Z.Cmd{
 		if card == nil {
 			return fmt.Errorf("contact not found: %s", query)
 		}
-		if vcf {
+		switch format {
+		case "json":
+			out, err := contacts.FormatCardJSON(card)
+			if err != nil {
+				return err
+			}
+			fmt.Println(out)
+		case "vcf":
 			data, err := contacts.EncodeCard(card)
 			if err != nil {
 				return err
 			}
 			fmt.Print(string(data))
-		} else {
+		default: // table
 			if supportsKittyGraphics() {
 				renderPhoto(card)
 			}
@@ -243,13 +281,12 @@ var getCmd = &Z.Cmd{
 	},
 }
 
-var deleteCmd = &Z.Cmd{
-	Name:    "delete",
-	Summary: "delete a contact by name or UID",
-	Usage:   "<name|uid>",
-	MinArgs: 1,
-	Comp:    contactCompleter{},
-	Call: func(x *Z.Cmd, args ...string) error {
+var deleteCmd = &bonzai.Cmd{
+	Name:  "delete",
+	Short: "delete a contact by name or UID",
+	Usage: "<name|uid>",
+	Comp:  contactCompleter{},
+	Do: func(x *bonzai.Cmd, args ...string) error {
 		query := strings.Join(args, " ")
 		cm, err := getManager()
 		if err != nil {
@@ -276,6 +313,28 @@ var deleteCmd = &Z.Cmd{
 		fmt.Fprintln(os.Stderr, "Deleted.")
 		return nil
 	},
+}
+
+// parseOutputFlag extracts -o <format> from args, returning the format
+// (defaulting to "table") and the remaining args.
+func parseOutputFlag(args []string) (string, []string, error) {
+	format := "table"
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-o" {
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("-o requires a format: table, json, or vcf")
+			}
+			format = strings.ToLower(args[i+1])
+			if format != "table" && format != "json" && format != "vcf" {
+				return "", nil, fmt.Errorf("unknown output format %q: use table, json, or vcf", format)
+			}
+			i++ // skip the format value
+		} else {
+			rest = append(rest, args[i])
+		}
+	}
+	return format, rest, nil
 }
 
 func getManager() (*contacts.ContactManager, error) {
@@ -412,5 +471,5 @@ func openBrowser(url string) error {
 }
 
 func main() {
-	Cmd.Run()
+	Cmd.Exec()
 }
