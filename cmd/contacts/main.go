@@ -21,27 +21,19 @@ import (
 	"github.com/arjungandhi/contacts"
 	"github.com/charmbracelet/huh"
 	"github.com/emersion/go-vcard"
-	"github.com/rwxrob/bonzai"
-	"github.com/rwxrob/bonzai/cmds/help"
-	"github.com/rwxrob/bonzai/comp"
+	"github.com/spf13/cobra"
 )
 
-// contactCompleter completes contact names for commands that take a contact arg.
-type contactCompleter struct{}
-
-func (contactCompleter) Complete(args ...string) []string {
+func contactCompletions(toComplete string) []string {
 	cm, err := getManagerQuiet()
 	if err != nil {
-		return []string{}
+		return nil
 	}
 	cards, err := cm.ListContacts()
 	if err != nil {
-		return []string{}
+		return nil
 	}
-	prefix := ""
-	if len(args) > 0 {
-		prefix = strings.ToLower(args[0])
-	}
+	prefix := strings.ToLower(toComplete)
 	var matches []string
 	for _, card := range cards {
 		name := contacts.CardFullName(card)
@@ -55,17 +47,17 @@ func (contactCompleter) Complete(args ...string) []string {
 	return matches
 }
 
-var Cmd = &bonzai.Cmd{
-	Name:  "contacts",
-	Short: "manage your contacts",
-	Comp:  comp.CmdsOpts,
-	Cmds:  []*bonzai.Cmd{help.Cmd, initCmd, syncCmd, listCmd, getCmd, deleteCmd},
+var rootCmd = &cobra.Command{
+	Use:          "contacts",
+	Short:        "manage your contacts",
+	SilenceUsage: true,
 }
 
-var initCmd = &bonzai.Cmd{
-	Name:  "init",
+var initCmd = &cobra.Command{
+	Use:   "init",
 	Short: "initialize google contacts provider",
-	Do: func(x *bonzai.Cmd, args ...string) error {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := contacts.NewConfig()
 		if err := cfg.EnsureDir(); err != nil {
 			return err
@@ -156,10 +148,11 @@ func authorize(cfg *contacts.Config, provider *contacts.GoogleContactsProvider) 
 	return nil
 }
 
-var syncCmd = &bonzai.Cmd{
-	Name:  "sync",
+var syncCmd = &cobra.Command{
+	Use:   "sync",
 	Short: "sync contacts from google",
-	Do: func(x *bonzai.Cmd, args ...string) error {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cm, err := getManager()
 		if err != nil {
 			return err
@@ -177,16 +170,13 @@ var syncCmd = &bonzai.Cmd{
 	},
 }
 
-var listCmd = &bonzai.Cmd{
-	Name:  "list",
-	Short: "list all contacts (-o table|json|vcf)",
-	Usage: "[-o format]",
-	Opts:  "table|json|vcf",
-	Do: func(x *bonzai.Cmd, args ...string) error {
-		format, _, err := parseOutputFlag(args)
-		if err != nil {
-			return err
-		}
+var listOutputFormat string
+
+var listCmd = &cobra.Command{
+	Use:   "list",
+	Short: "list all contacts",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cm, err := getManager()
 		if err != nil {
 			return err
@@ -195,7 +185,7 @@ var listCmd = &bonzai.Cmd{
 		if err != nil {
 			return err
 		}
-		switch format {
+		switch listOutputFormat {
 		case "json":
 			out, err := contacts.FormatCardsJSON(list)
 			if err != nil {
@@ -227,26 +217,17 @@ var listCmd = &bonzai.Cmd{
 	},
 }
 
-var getCmd = &bonzai.Cmd{
-	Name:  "get",
-	Short: "get a contact by name or UID (-o table|json|vcf)",
-	Usage: "[-o format] <name|uid>",
-	Opts:  "table|json|vcf",
-	Comp:  contactCompleter{},
-	Do: func(x *bonzai.Cmd, args ...string) error {
-		format, rest, err := parseOutputFlag(args)
-		if err != nil {
-			return err
-		}
-		// Backward compat: --vcf still works
-		if len(rest) > 0 && rest[0] == "--vcf" {
-			format = "vcf"
-			rest = rest[1:]
-		}
-		if len(rest) == 0 {
-			return fmt.Errorf("missing argument")
-		}
-		query := strings.Join(rest, " ")
+var getOutputFormat string
+
+var getCmd = &cobra.Command{
+	Use:   "get <name|uid>",
+	Short: "get a contact by name or UID",
+	Args:  cobra.MinimumNArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return contactCompletions(toComplete), cobra.ShellCompDirectiveNoFileComp
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		query := strings.Join(args, " ")
 		cm, err := getManager()
 		if err != nil {
 			return err
@@ -258,7 +239,7 @@ var getCmd = &bonzai.Cmd{
 		if card == nil {
 			return fmt.Errorf("contact not found: %s", query)
 		}
-		switch format {
+		switch getOutputFormat {
 		case "json":
 			out, err := contacts.FormatCardJSON(card)
 			if err != nil {
@@ -281,12 +262,14 @@ var getCmd = &bonzai.Cmd{
 	},
 }
 
-var deleteCmd = &bonzai.Cmd{
-	Name:  "delete",
+var deleteCmd = &cobra.Command{
+	Use:   "delete <name|uid>",
 	Short: "delete a contact by name or UID",
-	Usage: "<name|uid>",
-	Comp:  contactCompleter{},
-	Do: func(x *bonzai.Cmd, args ...string) error {
+	Args:  cobra.MinimumNArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return contactCompletions(toComplete), cobra.ShellCompDirectiveNoFileComp
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
 		query := strings.Join(args, " ")
 		cm, err := getManager()
 		if err != nil {
@@ -315,26 +298,18 @@ var deleteCmd = &bonzai.Cmd{
 	},
 }
 
-// parseOutputFlag extracts -o <format> from args, returning the format
-// (defaulting to "table") and the remaining args.
-func parseOutputFlag(args []string) (string, []string, error) {
-	format := "table"
-	var rest []string
-	for i := 0; i < len(args); i++ {
-		if args[i] == "-o" {
-			if i+1 >= len(args) {
-				return "", nil, fmt.Errorf("-o requires a format: table, json, or vcf")
-			}
-			format = strings.ToLower(args[i+1])
-			if format != "table" && format != "json" && format != "vcf" {
-				return "", nil, fmt.Errorf("unknown output format %q: use table, json, or vcf", format)
-			}
-			i++ // skip the format value
-		} else {
-			rest = append(rest, args[i])
-		}
-	}
-	return format, rest, nil
+func init() {
+	listCmd.Flags().StringVarP(&listOutputFormat, "output", "o", "table", "output format (table|json|vcf)")
+	getCmd.Flags().StringVarP(&getOutputFormat, "output", "o", "table", "output format (table|json|vcf)")
+	outputFormats := []string{"table", "json", "vcf"}
+	listCmd.RegisterFlagCompletionFunc("output", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return outputFormats, cobra.ShellCompDirectiveNoFileComp
+	})
+	getCmd.RegisterFlagCompletionFunc("output", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return outputFormats, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.AddCommand(initCmd, syncCmd, listCmd, getCmd, deleteCmd)
 }
 
 func getManager() (*contacts.ContactManager, error) {
@@ -471,5 +446,7 @@ func openBrowser(url string) error {
 }
 
 func main() {
-	Cmd.Exec()
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
 }
